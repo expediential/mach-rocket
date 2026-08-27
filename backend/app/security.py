@@ -16,8 +16,3 @@ def scan_text(name: str, content: str) -> list[SecurityFinding]:
         if pattern.search(content):
             findings.append(SecurityFinding(id=f"sec-{len(findings) + 1}", title=title, severity="HIGH", status="OPEN", detail=f"Potential secret detected in {Path(name).name}. Review and rotate if real."))
     return findings
-
-
-def demo_findings() -> list[SecurityFinding]:
-    """Return the demo security evidence shown in the starter project."""
-    return [SecurityFinding(id="SEC-001", title="Malformed packet rejected", severity="LOW", status="RESOLVED", detail="Schema validation rejected a packet with an invalid temperature value; no source data was changed."), SecurityFinding(id="SEC-002", title="No hard-coded production credentials", severity="INFO", status="PASS", detail="Demo integrity key is explicitly development-only and is not a production credential.")]

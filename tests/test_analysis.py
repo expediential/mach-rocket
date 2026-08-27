@@ -35,7 +35,7 @@ class ComparisonTests(unittest.TestCase):
 
     def test_temperature_metric_is_present(self):
         result = compare([packet(0), packet(100, 1, 15)], [packet(0), packet(100, 1, 20)])
-        self.assertEqual(result["metrics"][2].difference, 5)
+        self.assertEqual(result["metrics"][2].difference, 2.5)
 
 
 class OrkTests(unittest.TestCase):

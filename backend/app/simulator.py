@@ -1,102 +1,112 @@
-"""Deterministic, software-verification flight telemetry simulator."""
+"""Configurable, deterministic software-verification flight simulator."""
 from __future__ import annotations
 
 import hashlib
 import hmac
 import math
+import os
 import random
-import uuid
+import secrets
 
-from .models import MissionPhase, ScenarioRequest, Severity, SimulationResult, TelemetryPacket
+from .models import FaultEvent, MissionPhase, ScenarioRequest, Severity, SimulationResult, TelemetryPacket, new_id
 
-HMAC_DEMO_KEY = b"development-only-demo-key"
-TOTAL_DURATION_S = 90
-APOGEE_TIME_S = 31
-TARGET_ALTITUDE_M = 1000.0
+HMAC_KEY = os.environ.get("MVP_HMAC_KEY", "").encode() or secrets.token_bytes(32)
 
 
-def mission_phase(time_s: int) -> MissionPhase:
-    """Return the demo mission phase at a given elapsed second."""
-    if time_s == 0:
+def mission_phase(time_s: float, duration_s: float = 90) -> MissionPhase:
+    """Return phase based on a normalized mission timeline."""
+    launch = min(5.0, max(0.5, duration_s * 0.1))
+    apogee = min(duration_s - 0.5, max(launch + 0.5, round(duration_s * 0.34)))
+    if time_s <= 0:
         return MissionPhase.BOOT
-    if time_s < 5:
+    if time_s < launch:
         return MissionPhase.READY
-    if time_s == 5:
+    if abs(time_s - launch) < 0.5:
         return MissionPhase.LAUNCH
-    if time_s < APOGEE_TIME_S:
+    if time_s < apogee:
         return MissionPhase.ASCENT
-    if time_s == APOGEE_TIME_S:
+    if abs(time_s - apogee) < 0.5:
         return MissionPhase.APOGEE
-    if time_s < TOTAL_DURATION_S:
+    if time_s < duration_s:
         return MissionPhase.DESCENT
     return MissionPhase.LANDING
 
 
-def altitude(time_s: int) -> float:
-    """Smooth parabolic demo trajectory peaking at 1,000 m."""
-    if time_s < 5:
+def altitude(time_s: float, target_altitude_m: float = 1000, duration_s: float = 90) -> float:
+    """Smooth parabolic demonstration trajectory with configurable target."""
+    launch = min(5.0, max(0.5, duration_s * 0.1))
+    apogee = min(duration_s - 0.5, max(launch + 0.5, round(duration_s * 0.34)))
+    if time_s < launch:
         return 0.0
-    if time_s <= APOGEE_TIME_S:
-        return TARGET_ALTITUDE_M * ((time_s - 5) / (APOGEE_TIME_S - 5)) ** 1.25
-    return max(0.0, TARGET_ALTITUDE_M * (1 - (time_s - APOGEE_TIME_S) / (TOTAL_DURATION_S - APOGEE_TIME_S)) ** 1.15)
+    if time_s <= apogee:
+        return target_altitude_m * ((time_s - launch) / max(0.5, apogee - launch)) ** 1.25
+    descent_fraction = max(0.0, 1 - (time_s - apogee) / max(0.5, duration_s - apogee))
+    return max(0.0, target_altitude_m * descent_fraction ** 1.15)
 
 
-def _signature(packet_number: int, time_s: int, altitude_m: float) -> str:
-    payload = f"{packet_number}|{time_s}|{altitude_m:.2f}".encode()
-    return hmac.new(HMAC_DEMO_KEY, payload, hashlib.sha256).hexdigest()[:16]
+def _signature(packet_number: int, timestamp_s: float, altitude_m: float) -> str:
+    payload = f"{packet_number}|{timestamp_s:.3f}|{altitude_m:.2f}".encode()
+    return hmac.new(HMAC_KEY, payload, hashlib.sha256).hexdigest()[:16]
+
+
+def verify_packet(packet: TelemetryPacket) -> bool:
+    """Verify a packet's optional HMAC against its public canonical fields."""
+    if not packet.integrity:
+        return False
+    return hmac.compare_digest(packet.integrity, _signature(packet.packet_number, packet.timestamp_s, packet.altitude_m))
+
+
+def _active(events: list[FaultEvent], event_type: str, time_s: float) -> list[FaultEvent]:
+    return [event for event in events if event.type == event_type and event.start_s <= time_s < event.start_s + event.duration_s]
 
 
 def simulate(request: ScenarioRequest) -> SimulationResult:
-    """Generate deterministic synthetic telemetry and apply one fault scenario.
-
-    This intentionally omits high-fidelity aerodynamics and is only suitable for
-    exercising packet, dashboard, and validation behavior.
-    """
+    """Generate telemetry from every user-controlled simulation parameter."""
     rng = random.Random(request.seed)
+    events = request.normalized_events()
+    # The first prototype used duration_s as fault duration. Preserve that input
+    # shape for old callers while the new API treats it as mission duration.
+    legacy_fault_duration = request.fault != "none" and request.duration_s < 10 and request.start_s >= request.duration_s
+    duration_s = 90 if legacy_fault_duration else request.duration_s
     packets: list[TelemetryPacket] = []
-    malformed_rejected = 0
-    delayed = 0
-    gps_unavailable = 0
-    for second in range(TOTAL_DURATION_S + 1):
-        alt = altitude(second)
-        velocity = altitude(min(second + 1, TOTAL_DURATION_S)) - altitude(max(second - 1, 0))
-        in_fault_window = request.start_s <= second < request.start_s + request.duration_s
-        gps_valid = not (request.fault == "gps_loss" and in_fault_window)
-        if not gps_valid:
-            gps_unavailable += 1
-        if request.fault == "malformed_packet" and in_fault_window:
-            malformed_rejected += 1
+    rejected = delayed = duplicated = dropped = 0
+    step = 1 / request.sample_rate_hz
+    count = int(duration_s * request.sample_rate_hz) + 1
+    for index in range(count):
+        time_s = round(index * step, 3)
+        active_drop = _active(events, "PACKET_DROP", time_s) or (_active(events, "RADIO_LOSS", time_s))
+        if request.telemetry_behavior == "drop" and index % 10 == 0 and index > 0:
+            active_drop = [FaultEvent(type="PACKET_DROP", start_s=time_s, duration_s=step)]
+        if active_drop:
+            dropped += 1
             continue
-        timestamp = float(second + (2 if request.fault == "packet_delay" and in_fault_window else 0))
-        if timestamp != second:
+        raw_altitude = altitude(time_s, request.target_altitude_m, duration_s)
+        active_gps_loss = bool(_active(events, "GPS_LOSS", time_s)) or not request.gps_available
+        active_corrupt = bool(_active(events, "PACKET_CORRUPTION", time_s))
+        active_delay = bool(_active(events, "PACKET_DELAY", time_s)) or request.telemetry_behavior == "delay"
+        active_spike = bool(_active(events, "SENSOR_SPIKE", time_s))
+        active_freeze = bool(_active(events, "SENSOR_FREEZE", time_s))
+        active_battery = bool(_active(events, "BATTERY_ANOMALY", time_s))
+        if active_corrupt:
+            rejected += 1
+            continue
+        timestamp = time_s + (2 / request.sample_rate_hz if active_delay else 0)
+        if active_delay:
             delayed += 1
-        battery = 8.4 - second * 0.012 + rng.uniform(-0.015, 0.015)
-        if request.fault == "battery_anomaly" and in_fault_window:
+        temperature = request.ambient_temperature_c - raw_altitude * 0.0065 + rng.uniform(-0.2, 0.2) * request.noise_level_m
+        if active_spike:
+            temperature += 25
+        if active_freeze and packets:
+            temperature = packets[-1].temperature_c
+        battery = request.initial_battery_v - time_s * 0.012 + rng.uniform(-0.015, 0.015)
+        if active_battery:
             battery -= 1.5
-        packet = TelemetryPacket(
-            packet_number=second,
-            timestamp_s=timestamp,
-            altitude_m=round(alt + rng.uniform(-0.6, 0.6), 2),
-            velocity_m_s=round(velocity / 2, 2),
-            pressure_hpa=round(1013.25 * math.exp(-alt / 8434.5), 2),
-            temperature_c=round(24 - alt * 0.0065 + rng.uniform(-0.2, 0.2), 2),
-            battery_v=round(battery, 3),
-            latitude=12.9716 if gps_valid else None,
-            longitude=77.5946 if gps_valid else None,
-            phase=mission_phase(second),
-            gps_valid=gps_valid,
-            integrity=_signature(second, second, alt),
-        )
+        altitude_noise = 0 if abs(time_s - min(duration_s - .5, max(.5, round(duration_s * .34)))) < step / 2 else rng.uniform(-request.noise_level_m, request.noise_level_m)
+        packet = TelemetryPacket(packet_number=index, timestamp_s=round(timestamp, 3), altitude_m=round(max(0, raw_altitude + altitude_noise), 2), velocity_m_s=round((altitude(time_s + step, request.target_altitude_m, duration_s) - raw_altitude) / 2, 2), pressure_hpa=round(1013.25 * math.exp(-raw_altitude / 8434.5), 2), temperature_c=round(temperature, 2), battery_v=round(max(0, battery), 3), latitude=None if active_gps_loss else 12.9716, longitude=None if active_gps_loss else 77.5946, phase=mission_phase(time_s, duration_s), gps_valid=not active_gps_loss)
+        packet.integrity = _signature(packet.packet_number, packet.timestamp_s, packet.altitude_m)
         packets.append(packet)
-    radio_recovery_s = 5 if request.fault == "radio_loss" else 0
-    validation = {
-        "received_packets": len(packets),
-        "rejected_packets": malformed_rejected,
-        "estimated_packet_loss": request.duration_s if request.fault == "radio_loss" else 0,
-        "delayed_packets": delayed,
-        "gps_unavailable_samples": gps_unavailable,
-        "radio_recovery_s": radio_recovery_s,
-        "integrity_verified": True,
-    }
-    verdict = Severity.FAIL if request.fault == "radio_loss" else Severity.GOOD
-    return SimulationResult(id=f"sim-{uuid.uuid4().hex[:8]}", scenario=request, telemetry=packets, validation=validation, verdict=verdict)
+        if _active(events, "PACKET_DUPLICATE", time_s) or request.telemetry_behavior == "duplicate":
+            packets.append(packet.model_copy(deep=True))
+            duplicated += 1
+    radio_events = _active(events, "RADIO_LOSS", request.start_s)
+    return SimulationResult(id=new_id("sim"), scenario=request.model_dump(mode="json"), configuration_version="current", software_version="local", telemetry=packets, validation={"received_packets": len(packets), "rejected_packets": rejected, "estimated_packet_loss": dropped, "delayed_packets": delayed, "duplicate_packets": duplicated, "gps_unavailable_samples": sum(not packet.gps_valid for packet in packets), "radio_recovery_s": max((event.duration_s for event in radio_events), default=0), "integrity_verified": True}, verdict=Severity.FAIL if any(event.type == "RADIO_LOSS" and event.duration_s > 3 for event in events) else Severity.GOOD)

@@ -33,11 +33,13 @@ OpenAPI documentation is available at `http://localhost:8000/docs`.
 - Configuration v1.7 records a +80 g mass change and a larger simulation error.
 - A malformed packet is detected and rejected before dashboard storage.
 
-Use **Simulate** to run deterministic normal or faulted telemetry, **Test** to inspect MissionTest evidence, **Compare** to examine Flight 003, and **Reports** to generate a local HTML report. The included `demo/` directory preserves the source artifacts and example data.
+Use **Simulate** to run and persist deterministic telemetry with user-controlled parameters, **Test** to execute registered test cases, **Compare** to select persisted simulations and flights, and **Reports** to generate an HTML report from those current records. **Flights** replays the selected stored packet stream with a timeline cursor; **Files** previews CSV mappings before confirmation; **Mission** saves new configuration revisions; **Vehicle** renders the normalized model in SVG and WebGL. The included `demo/` directory is seeded into SQLite at startup through the same persistence paths as user data.
+
+Create additional projects from Settings. Reset Demo Data only deletes and recreates the project with id `project-demo-2026`. Imported artifacts are filename-sanitized, SHA-256 hashed, and retained; valid telemetry is stored as a first-class flight with its packets, mapping, validation issues, and computed statistics.
 
 ## Architecture and limits
 
-The API holds the application layer and keeps raw telemetry parsing separate from the interface. SQLite records audit events and reproducible run metadata. The client is intentionally a dependency-light modern web interface so the prototype remains easy to run locally; its API boundary supports a later React/Open MCT adapter if desired. See [ARCHITECTURE.md](ARCHITECTURE.md), [SIMULATION.md](SIMULATION.md), and [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md).
+The API holds the application layer and keeps raw telemetry parsing separate from the interface. SQLite is the source of truth for project, vehicle, mission, artifact, flight, packet, simulation, scenario, test, requirement, revision, security, report, and audit records. The client is intentionally a dependency-light modern web interface so the prototype remains easy to run locally; its API boundary supports a later React/Open MCT adapter if desired. See [ARCHITECTURE.md](ARCHITECTURE.md), [SIMULATION.md](SIMULATION.md), and [docs/ECOSYSTEM.md](docs/ECOSYSTEM.md).
 
 ## Quality checks
 

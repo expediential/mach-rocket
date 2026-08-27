@@ -1,7 +1,7 @@
 import unittest
 
 from backend.app.models import MissionPhase, ScenarioRequest, Severity
-from backend.app.simulator import altitude, mission_phase, simulate
+from backend.app.simulator import altitude, mission_phase, simulate, verify_packet
 
 
 class SimulatorTests(unittest.TestCase):
@@ -57,3 +57,8 @@ class SimulatorTests(unittest.TestCase):
     def test_integrity_signature_present(self):
         self.assertEqual(len(simulate(ScenarioRequest()).telemetry[0].integrity), 16)
 
+    def test_integrity_detects_tampering(self):
+        packet = simulate(ScenarioRequest()).telemetry[0]
+        self.assertTrue(verify_packet(packet))
+        packet.altitude_m += 1
+        self.assertFalse(verify_packet(packet))
