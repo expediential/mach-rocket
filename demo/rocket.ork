@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Minimal retained OpenRocket-like artifact for parser and UI demonstration. -->
+<openrocket>
+  <rocket name="Team Falcon-X">
+    <subcomponents>
+      <stage><name>Falcon-X sustainer</name><mass>1.82</mass><length>1.38</length><motorconfiguration><motor>Demo solid motor</motor></motorconfiguration></stage>
+    </subcomponents>
+  </rocket>
+</openrocket>

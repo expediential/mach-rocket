@@ -1,0 +1,6 @@
+[
+  {"id":"TEST-MSN-001","name":"Normal mission","expected":"Mission reaches apogee and lands","status":"PASS"},
+  {"id":"TEST-GPS-002","name":"GPS loss","expected":"Mission continues","status":"PASS"},
+  {"id":"TEST-COM-004","name":"Radio interruption","expected":"Reconnect in 3 seconds","status":"FAIL"},
+  {"id":"TEST-TEL-006","name":"Malformed telemetry","expected":"Packet rejected","status":"PASS"}
+]

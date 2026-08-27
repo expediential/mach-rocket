@@ -1,0 +1,4 @@
+[
+  {"id":"REQ-TEL-001","requirement":"Telemetry transmitted at 1 Hz","implementation":"backend/app/simulator.py","test":"TEST-MSN-001","evidence":"demo/simulated_flight.csv","status":"VERIFIED"},
+  {"id":"REQ-COM-004","requirement":"Detect missing telemetry and recover radio link within 3 seconds","implementation":"backend/app/telemetry.py","test":"TEST-COM-004","evidence":"radio-loss scenario","status":"FAILED"}
+]

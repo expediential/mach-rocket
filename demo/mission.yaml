@@ -1,0 +1,15 @@
+# Central mission source of truth for the local Falcon-X demonstration.
+mission:
+  name: IN-SPACe Rocket 2026
+  target_altitude_m: 1000
+  allowed_altitude_error_m: 100
+telemetry:
+  rate_hz: 1
+sensors:
+  pressure: true
+  temperature: true
+  gps: true
+  battery: true
+flight:
+  expected_duration_s: 90
+version: v1.7

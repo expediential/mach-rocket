@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mission Validation Platform</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand"><div class="brand-mark">M</div><div><strong>MISSION</strong><span>VALIDATION PLATFORM</span></div></div>
+      <div class="project-switch"><span class="eyebrow">ACTIVE WORKSPACE</span><strong>IN-SPACe Rocket 2026</strong><small>Team Falcon-X · v0.1</small></div>
+      <nav aria-label="Main navigation">
+        <button class="nav active" data-page="Dashboard">⌂ <span>Dashboard</span></button>
+        <button class="nav" data-page="Vehicle">◒ <span>Vehicle</span></button>
+        <button class="nav" data-page="Mission">◎ <span>Mission</span></button>
+        <button class="nav" data-page="Simulate">▷ <span>Simulate</span></button>
+        <button class="nav" data-page="Test">✓ <span>Test</span></button>
+        <button class="nav" data-page="Flights">⌁ <span>Flights</span></button>
+        <button class="nav" data-page="Compare">⇄ <span>Compare</span></button>
+        <button class="nav" data-page="Reports">▣ <span>Reports</span></button>
+        <button class="nav" data-page="Files">▤ <span>Files</span></button>
+        <button class="nav" data-page="Security">◇ <span>Security</span></button>
+        <button class="nav" data-page="Settings">⚙ <span>Settings</span></button>
+      </nav>
+      <div class="sidebar-footer"><span class="dot green"></span> Local workspace<br /><small>Software validation prototype</small></div>
+    </aside>
+    <main>
+      <header><div><span class="eyebrow" id="crumb">DASHBOARD</span><h1 id="page-title">Mission overview</h1></div><div class="header-actions"><span class="badge neutral">LOCAL-FIRST</span><button class="secondary" id="report-button">Generate report</button><button class="primary" id="quick-sim">Run simulation</button></div></header>
+      <div class="notice"><span>i</span><p><strong>Decision-support prototype.</strong> Simulated values help verify software behavior; they do not certify flight safety or replace physical testing.</p></div>
+      <section id="content" aria-live="polite"></section>
+    </main>
+    <template id="dashboard-template">
+      <div class="hero"><div><span class="eyebrow">WHAT YOU ARE TESTING</span><h2>1000 m target-altitude mission</h2><p>Falcon-X is configured for a 90-second mission with telemetry at 1 Hz.</p></div><div class="hero-status"><span class="eyebrow">OVERALL HEALTH</span><strong>82<span>/100</span></strong><small>Software verification indicator</small></div></div>
+      <div class="health-grid" id="health-grid"></div>
+      <div class="grid two"><article class="panel"><div class="panel-head"><div><span class="eyebrow">WHAT HAPPENED</span><h3>Latest validation story</h3></div><span class="badge warning">ACTION NEEDED</span></div><div class="story"><div class="story-step pass"><b>01</b><div><strong>Simulation reached 1000 m</strong><span>Normal mission telemetry generated.</span></div></div><div class="story-step warning"><b>02</b><div><strong>Actual flight reached 967 m</strong><span>Altitude is within the configured ±100 m band.</span></div></div><div class="story-step fail"><b>03</b><div><strong>Radio recovery test failed</strong><span>Reconnect took 5 seconds; expected ≤3 seconds.</span></div></div></div></article><article class="panel"><span class="eyebrow">WHAT TO INVESTIGATE</span><h3>Next engineering question</h3><div class="investigate"><div class="warning-icon">!</div><div><strong>Radio reconnection timing</strong><p>Repeat the 5-second interruption test after reviewing timeout and retry handling.</p><button class="link-button" data-go="Test">Open test evidence →</button></div></div><hr/><span class="eyebrow">CONFIGURATION CHANGE</span><p><strong>v1.7</strong> · Rocket mass changed by +80 g</p><small class="muted">Simulation error increased after this revision.</small></article></div>
+      <div class="grid split"><article class="panel"><div class="panel-head"><div><span class="eyebrow">MISSION PROFILE</span><h3>Altitude · simulated vs actual</h3></div><span class="legend"><i></i> Simulation <i class="actual"></i> Flight 003</span></div><div class="chart-wrap"><svg viewBox="0 0 700 230" preserveAspectRatio="none" class="profile-chart"><line x1="0" y1="198" x2="700" y2="198"/><line x1="0" y1="134" x2="700" y2="134"/><line x1="0" y1="70" x2="700" y2="70"/><path class="area" d="M0,198 C55,198 85,196 105,167 S170,65 240,28 S310,45 360,90 S450,160 700,198 L700,198Z"/><path class="line-sim" d="M0,198 C55,198 85,196 105,167 S170,65 240,28 S310,45 360,90 S450,160 700,198"/><path class="line-actual" d="M0,198 C55,198 85,196 105,170 S170,71 240,35 S310,51 360,95 S450,164 700,198"/></svg><div class="axis"><span>0 s</span><span>30 s</span><span>60 s</span><span>90 s</span></div></div></article><article class="panel compact"><span class="eyebrow">SYSTEM STATUS</span><div class="metrics"><div><span>Altitude target</span><strong>1000 <small>m</small></strong><em class="pass-text">SIMULATED</em></div><div><span>Actual apogee</span><strong>967 <small>m</small></strong><em class="warning-text">−3.3%</em></div><div><span>Packets received</span><strong>87 <small>of 91</small></strong><em class="warning-text">4 missing</em></div></div></article></div>
+    </template>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

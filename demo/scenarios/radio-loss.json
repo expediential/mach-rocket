@@ -1,0 +1,1 @@
+{"name":"5-second radio interruption","fault":"radio_loss","start_s":40,"duration_s":5,"seed":2026,"expected":"Reconnect within 3 seconds (demonstration intentionally fails)."}

@@ -1,0 +1,8 @@
+packet_number,timestamp_s,altitude_m,temperature_c,battery_v,phase,gps_valid
+0,0,0,24.0,8.40,BOOT,true
+5,5,0,24.0,8.34,LAUNCH,true
+15,15,262,22.3,8.22,ASCENT,true
+25,25,715,19.4,8.10,ASCENT,true
+31,31,1000,17.5,8.03,APOGEE,true
+45,45,610,20.0,7.86,DESCENT,true
+90,90,0,24.0,7.32,LANDING,true

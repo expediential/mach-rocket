@@ -1,0 +1,1 @@
+{"name":"GPS loss","fault":"gps_loss","start_s":40,"duration_s":10,"seed":2026,"expected":"Mission continues and GPS becomes invalid."}
