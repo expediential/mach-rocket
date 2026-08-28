@@ -47,8 +47,8 @@ class OrkTests(unittest.TestCase):
 
     def test_collects_optional_fields(self):
         result = parse_ork("<openrocket><rocket name='F'/><mass>1.8</mass><length>1.3</length><motor>A8</motor></openrocket>")
-        self.assertEqual(result["mass_kg"], "1.8")
-        self.assertEqual(result["length_m"], "1.3")
+        self.assertEqual(result["mass_kg"], 1.8)
+        self.assertEqual(result["length_m"], 1.3)
         self.assertEqual(result["motor"], "A8")
 
     def test_malformed_xml_becomes_warning(self):

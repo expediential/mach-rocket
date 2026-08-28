@@ -1,23 +1,26 @@
 """FastAPI application for the local Mission Validation Platform."""
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
 import json
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .comparison import compare
-from .models import AuditEvent, CompareRequest, ConfigurationUpdate, CsvImport, FaultEvent, ProjectCreate, ScenarioRequest, ScanRequest, SecurityFinding, Severity, TestCaseCreate, new_id
+from .models import ArtifactImport, AuditEvent, CompareRequest, ConfigurationUpdate, CsvImport, InvestigationCreate, InvestigationUpdate, ProjectArchiveImport, ProjectCreate, ProjectUpdate, ScenarioRequest, ScanRequest, SecurityFinding, Severity, TestCaseCreate, new_id
 from .ork import parse_ork
 from .reports import build_report
 from .security import scan_text
 from .simulator import simulate, verify_packet
-from .storage import audit_history, flight_with_packets, get_entity, get_packets, get_project, initialize, latest_runs, list_entities, list_projects, record_audit, reset_project, save_entity, save_flight, save_project, save_simulation, simulation_with_packets
+from .storage import active_project_id, artifact_bytes, audit_history, flight_with_packets, get_entity, get_packets, get_project, initialize, insert_packets, latest_runs, list_entities, list_projects, project_export_data, record_audit, reset_project, save_artifact_bytes, save_entity, save_flight, save_project, save_simulation, set_active_project, simulation_with_packets
 from .telemetry import parse_csv, telemetry_stats
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -35,9 +38,15 @@ def now() -> str:
 
 
 def current_project() -> dict[str, Any]:
+    selected_id = active_project_id()
+    if selected_id:
+        selected = get_project(selected_id)
+        if selected and not selected.get("archived", False):
+            return selected
     projects = list_projects()
     if not projects:
         raise HTTPException(status_code=404, detail="No project exists. Create a project or seed demo data.")
+    set_active_project(projects[0]["id"])
     return projects[0]
 
 
@@ -60,7 +69,8 @@ def seed_demo() -> dict[str, Any]:
     simulated = DEMO / "simulated_flight.csv"
     for path, kind in [(ork, "openrocket"), (actual, "telemetry"), (simulated, "telemetry")]:
         content = path.read_bytes()
-        save_entity("artifacts", {"id": new_id("artifact"), "name": path.name, "kind": kind, "sha256": hashlib.sha256(content).hexdigest(), "size_bytes": len(content), "source": f"demo/{path.name}", "preview": "Parsed metadata" if kind == "openrocket" else "CSV telemetry"}, DEMO_PROJECT_ID)
+        artifact_id = new_id("artifact")
+        save_entity("artifacts", {"id": artifact_id, "name": path.name, "kind": kind, "sha256": hashlib.sha256(content).hexdigest(), "size_bytes": len(content), "source": f"demo/{path.name}", "storage_path": save_artifact_bytes(artifact_id, content), "preview": "Parsed metadata" if kind == "openrocket" else "CSV telemetry"}, DEMO_PROJECT_ID)
     packets, errors, _ = parse_csv(_json_file(actual))
     save_flight({"id": "flight-demo-003", "name": "Flight 003", "type": "REAL", "source": "demo/actual_flight.csv", "source_sha256": hashlib.sha256(actual.read_bytes()).hexdigest(), "validation_errors": errors, "available_fields": ["packet_number", "timestamp_s", "altitude_m", "temperature_c", "battery_v", "phase", "gps_valid"], "stats": telemetry_stats(packets)}, DEMO_PROJECT_ID, [packet.model_dump(mode="json") for packet in packets])
     sim = simulate(ScenarioRequest(name="Simulation #12", target_altitude_m=1000, duration_s=90, sample_rate_hz=1, seed=2026))
@@ -74,6 +84,7 @@ def seed_demo() -> dict[str, Any]:
         save_entity("test_cases", test, DEMO_PROJECT_ID)
     save_entity("requirements", {"id": "REQ-TEL-001", "requirement": "Telemetry transmitted at 1 Hz", "implementation": "telemetry.py", "test": "TEST-MSN-001", "evidence": "flight-demo-003", "status": "VERIFIED"}, DEMO_PROJECT_ID)
     save_entity("requirements", {"id": "REQ-COM-004", "requirement": "Detect missing telemetry and recover within 3 seconds", "implementation": "telemetry.py", "test": "TEST-COM-004", "evidence": "scenario radio loss", "status": "FAILED"}, DEMO_PROJECT_ID)
+    save_entity("investigations", {"id": "investigation-demo-radio", "observation": "Radio recovery exceeded the configured three-second expectation in the seeded radio-loss scenario.", "severity": "MEDIUM", "possible_causes": ["timeout and retry configuration", "ground-station reconnect timing"], "simulation_id": sim_payload["id"], "flight_id": "flight-demo-003", "configuration_version": "v1.7", "status": "OPEN", "notes": "Seeded example; treat as a hypothesis until evidence is collected."}, DEMO_PROJECT_ID)
     finding = SecurityFinding(id="SEC-001", title="Malformed packet rejected", severity="LOW", status="RESOLVED", detail="Schema validation rejected an invalid packet; source data was unchanged.")
     save_entity("security_findings", finding.model_dump(mode="json"), DEMO_PROJECT_ID)
     record_audit(AuditEvent(action="project_seeded", result="PASS", detail="Seeded Falcon-X demo through normal persistence paths.", object_id=DEMO_PROJECT_ID))
@@ -103,8 +114,116 @@ def create_project(payload: ProjectCreate) -> dict[str, Any]:
     save_entity("vehicles", {"id": new_id("vehicle"), "name": payload.vehicle_name, "mass_kg": 0, "length_m": 0, "stages": 1, "components": [], "source": "project form"}, project_id)
     save_entity("missions", {"id": new_id("mission"), "name": payload.mission_name, "target_altitude_m": payload.target_altitude_m, "allowed_altitude_error_m": payload.target_altitude_m * .1, "telemetry_rate_hz": payload.telemetry_rate_hz, "expected_duration_s": payload.expected_duration_s, "version": "v1.0"}, project_id)
     save_entity("config_revisions", {"id": new_id("revision"), "version": "v1.0", "reason": "Project created", "diff": {}, "source": "user"}, project_id)
+    set_active_project(project_id)
     record_audit(AuditEvent(action="project_created", result="PASS", detail=f"Created project {payload.name}.", object_id=project_id))
     return project
+
+
+@app.post("/api/projects/{project_id}/select")
+def select_project(project_id: str) -> dict[str, Any]:
+    project = get_project(project_id)
+    if not project or project.get("archived", False):
+        raise HTTPException(status_code=404, detail="Active project not found")
+    set_active_project(project_id)
+    record_audit(AuditEvent(action="project_opened", result="PASS", detail=f"Opened project {project['name']}.", object_id=project_id))
+    return project
+
+
+@app.patch("/api/projects/{project_id}")
+def update_project(project_id: str, payload: ProjectUpdate) -> dict[str, Any]:
+    project = get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    updated = {**project, **payload.model_dump(exclude_none=True)}
+    saved = save_project(updated, project_id)
+    if saved.get("archived") and active_project_id() == project_id:
+        alternatives = list_projects()
+        if alternatives:
+            set_active_project(alternatives[0]["id"])
+    record_audit(AuditEvent(action="project_archived" if payload.archived else "project_renamed", result="PASS", detail=f"Updated project {saved['name']}.", object_id=project_id))
+    return saved
+
+
+@app.post("/api/projects/{project_id}/duplicate")
+def duplicate_project(project_id: str) -> dict[str, Any]:
+    source = get_project(project_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Project not found")
+    snapshot = project_export_data(project_id)
+    bytes_by_artifact = {item["id"]: data for item in snapshot["entities"].get("artifacts", []) if (data := artifact_bytes(item["id"])) is not None}
+    return _import_project_snapshot(snapshot, bytes_by_artifact, name=f"{source['name']} copy", source="project duplicate", action="project_duplicated")
+
+
+def _replace_ids(value: Any, id_map: dict[str, str]) -> Any:
+    if isinstance(value, str):
+        return id_map.get(value, value)
+    if isinstance(value, list):
+        return [_replace_ids(item, id_map) for item in value]
+    if isinstance(value, dict):
+        return {key: _replace_ids(item, id_map) for key, item in value.items() if key not in {"storage_path", "created_at", "updated_at", "project_id"}}
+    return value
+
+
+def _import_project_snapshot(snapshot: dict[str, Any], artifact_content: dict[str, bytes] | None = None, *, name: str | None = None, source: str = "project archive import", action: str = "project_imported") -> dict[str, Any]:
+    if snapshot.get("format") != "mission-validation-project-v1" or not isinstance(snapshot.get("project"), dict):
+        raise HTTPException(status_code=422, detail="Unsupported project archive format")
+    project_id = new_id("project")
+    old_project = snapshot["project"]
+    project = save_project({**_replace_ids(old_project, {}), "id": project_id, "name": name or f"{old_project.get('name', 'Imported project')} (imported)", "source": source, "archived": False}, project_id)
+    entities = snapshot.get("entities", {})
+    id_map = {item["id"]: new_id(table[:-1]) for table, items in entities.items() if table in {"vehicles", "missions", "artifacts", "flights", "simulation_runs", "scenarios", "test_cases", "test_runs", "requirements", "config_revisions", "security_findings", "reports", "investigations"} for item in items}
+    for table, items in entities.items():
+        if table not in {"vehicles", "missions", "artifacts", "flights", "simulation_runs", "scenarios", "test_cases", "test_runs", "requirements", "config_revisions", "security_findings", "reports", "investigations"}:
+            continue
+        for item in reversed(items):
+            old_id = item["id"]
+            copied = _replace_ids(item, id_map)
+            copied["id"] = id_map[old_id]
+            if table == "artifacts" and artifact_content and old_id in artifact_content:
+                copied["storage_path"] = save_artifact_bytes(copied["id"], artifact_content[old_id])
+            save_entity(table, copied, project_id)
+    for old_source, packets in snapshot.get("packets", {}).items():
+        if old_source in id_map:
+            insert_packets(id_map[old_source], packets)
+    set_active_project(project_id)
+    record_audit(AuditEvent(action=action, result="PASS", detail=f"Imported project archive for {project['name']}.", object_id=project_id))
+    return project
+
+
+@app.get("/api/projects/{project_id}/export")
+def export_project(project_id: str) -> StreamingResponse:
+    snapshot = project_export_data(project_id)
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr("project.json", json.dumps(snapshot, indent=2, sort_keys=True))
+        for artifact in snapshot["entities"].get("artifacts", []):
+            source = artifact_bytes(artifact["id"])
+            if source is not None:
+                bundle.writestr(f"artifacts/{artifact['id']}", source)
+    archive.seek(0)
+    record_audit(AuditEvent(action="project_exported", result="PASS", detail=f"Exported {snapshot['project']['name']}.", object_id=project_id))
+    safe_stem = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in snapshot["project"]["name"])[:80]
+    return StreamingResponse(archive, media_type="application/zip", headers={"Content-Disposition": f'attachment; filename="{safe_stem or "mission-project"}.zip"'})
+
+
+@app.post("/api/projects/import")
+def import_project(payload: ProjectArchiveImport) -> dict[str, Any]:
+    try:
+        raw = base64.b64decode(payload.archive_base64, validate=True)
+        if len(raw) > 20_000_000:
+            raise ValueError("archive exceeds 20 MB limit")
+        with zipfile.ZipFile(io.BytesIO(raw)) as bundle:
+            names = bundle.namelist()
+            if "project.json" not in names or len(names) > 500:
+                raise ValueError("archive is missing project.json or contains too many files")
+            info = bundle.getinfo("project.json")
+            if info.file_size > 10_000_000:
+                raise ValueError("project metadata exceeds limit")
+            snapshot = json.loads(bundle.read("project.json"))
+            artifacts = {name.removeprefix("artifacts/"): bundle.read(name) for name in names if name.startswith("artifacts/") and "/" not in name.removeprefix("artifacts/") and bundle.getinfo(name).file_size <= 5_000_000}
+    except (ValueError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail=f"Project import failed: {exc}") from exc
+    return _import_project_snapshot(snapshot, artifacts)
 
 
 @app.get("/api/projects/{project_id}")
@@ -125,6 +244,7 @@ def dashboard() -> dict[str, Any]:
     simulations = latest_runs(project_id, 20)
     test_runs = list_entities("test_runs", project_id, 1)
     findings = list_entities("security_findings", project_id, 100)
+    investigations = list_entities("investigations", project_id, 100)
     passed = test_runs[0].get("passed", 0) if test_runs else 0
     total_tests = test_runs[0].get("total", 0) if test_runs else len(list_entities("test_cases", project_id, 100))
     test_rate = (passed / total_tests) if total_tests else 0
@@ -133,7 +253,8 @@ def dashboard() -> dict[str, Any]:
     score = round((min(1, len(simulations) / 1) * 20) + test_rate * 30 + telemetry_quality * 20 + (1 if list_entities("config_revisions", project_id, 1) else 0) * 15 + security_score * 15)
     latest_flight = flights[0] if flights else None
     latest_sim = simulations[0] if simulations else None
-    return {"project": project, "mission": mission, "vehicle": vehicles[0] if vehicles else None, "latest_flight": latest_flight, "latest_simulation": {"id": latest_sim["id"], "stats": {"packets": latest_sim.get("telemetry_count", 0)}} if latest_sim else None, "health": {"score": score, "summary": "Calculated from simulation coverage, test pass rate, telemetry quality, traceability, and security findings.", "breakdown": {"simulation_coverage": min(20, len(simulations) * 20), "test_pass_rate": round(test_rate * 30), "telemetry_quality": round(telemetry_quality * 20), "configuration_traceability": 15 if list_entities("config_revisions", project_id, 1) else 0, "security": round(security_score * 15)}, "items": [{"name": "Simulation", "status": "GOOD" if simulations else "NOT TESTED"}, {"name": "Telemetry", "status": "GOOD" if flights else "NOT TESTED"}, {"name": "Testing", "status": "GOOD" if total_tests and passed == total_tests else "WARNING" if total_tests else "NOT TESTED"}, {"name": "Configuration", "status": "GOOD" if list_entities("config_revisions", project_id, 1) else "NOT TESTED"}, {"name": "Cybersecurity", "status": "GOOD" if security_score == 1 else "WARNING"}]}, "next_investigation": "Review radio recovery timing" if test_runs and test_runs[0].get("failed") else "Run the first validation suite"}
+    open_investigations = sum(item.get("status") in {"OPEN", "UNDER INVESTIGATION"} for item in investigations)
+    return {"project": project, "mission": mission, "vehicle": vehicles[0] if vehicles else None, "latest_flight": latest_flight, "latest_simulation": {"id": latest_sim["id"], "stats": {"packets": latest_sim.get("telemetry_count", 0)}} if latest_sim else None, "tests": {"passed": passed, "failed": test_runs[0].get("failed", 0) if test_runs else 0}, "open_investigations": open_investigations, "health": {"score": score, "summary": "Calculated from simulation coverage, test pass rate, telemetry quality, traceability, and security findings.", "breakdown": {"simulation_coverage": min(20, len(simulations) * 20), "test_pass_rate": round(test_rate * 30), "telemetry_quality": round(telemetry_quality * 20), "configuration_traceability": 15 if list_entities("config_revisions", project_id, 1) else 0, "security": round(security_score * 15)}, "items": [{"name": "Simulation", "status": "GOOD" if simulations else "NOT TESTED"}, {"name": "Telemetry", "status": "GOOD" if flights else "NOT TESTED"}, {"name": "Testing", "status": "GOOD" if total_tests and passed == total_tests else "WARNING" if total_tests else "NOT TESTED"}, {"name": "Configuration", "status": "GOOD" if list_entities("config_revisions", project_id, 1) else "NOT TESTED"}, {"name": "Cybersecurity", "status": "GOOD" if security_score == 1 else "WARNING"}]}, "next_investigation": "Review radio recovery timing" if test_runs and test_runs[0].get("failed") else "Run the first validation suite"}
 
 
 @app.get("/api/vehicle")
@@ -146,12 +267,25 @@ def vehicle() -> dict[str, Any]:
 
 
 @app.post("/api/artifacts/import")
-def import_artifact(payload: CsvImport) -> dict[str, Any]:
+def import_artifact(payload: ArtifactImport) -> dict[str, Any]:
     project = current_project()
     safe_name = Path(payload.name).name
-    content_bytes = payload.csv.encode()
-    artifact = save_entity("artifacts", {"id": new_id("artifact"), "name": safe_name, "kind": "openrocket" if safe_name.lower().endswith(".ork") else "artifact", "sha256": hashlib.sha256(content_bytes).hexdigest(), "size_bytes": len(content_bytes), "source": "user import"}, project["id"])
-    normalized = parse_ork(payload.csv) if safe_name.lower().endswith(".ork") else {"warnings": ["Preview unavailable. File retained for project traceability."]}
+    content_bytes = payload.content.encode("utf-8")
+    artifact_id = new_id("artifact")
+    kind = "openrocket" if safe_name.lower().endswith(".ork") else Path(safe_name).suffix.lstrip(".").lower() or "artifact"
+    artifact = save_entity("artifacts", {"id": artifact_id, "name": safe_name, "kind": kind, "sha256": hashlib.sha256(content_bytes).hexdigest(), "size_bytes": len(content_bytes), "source": "user import", "storage_path": save_artifact_bytes(artifact_id, content_bytes)}, project["id"])
+    normalized = parse_ork(payload.content) if kind == "openrocket" else {"warnings": ["Preview unavailable. File retained for project traceability."], "components": []}
+    artifact["preview"] = "Parsed OpenRocket metadata" if kind == "openrocket" and not normalized["warnings"] else normalized["warnings"][0]
+    save_entity("artifacts", artifact, project["id"])
+    if kind == "openrocket" and normalized.get("components"):
+        vehicles = list_entities("vehicles", project["id"], 1)
+        if vehicles:
+            vehicle = vehicles[0]
+            components = normalized["components"]
+            inferred_length = normalized.get("length_m") or max((component.get("position_m", 0) + component.get("length_m", 0) for component in components), default=vehicle.get("length_m", 0))
+            updated = {**vehicle, "name": normalized.get("rocket_name") or vehicle["name"], "components": components, "length_m": inferred_length, "mass_kg": normalized.get("mass_kg") if normalized.get("mass_kg") is not None else vehicle.get("mass_kg"), "motor": normalized.get("motor") or vehicle.get("motor"), "stages": normalized.get("stages") or vehicle.get("stages"), "source": "OpenRocket-derived", "artifact_id": artifact_id}
+            save_entity("vehicles", updated, project["id"])
+            normalized["vehicle_updated"] = True
     record_audit(AuditEvent(action="artifact_imported", result="PASS", detail=f"Imported {safe_name} with SHA-256 {artifact['sha256'][:12]}…", object_id=artifact["id"]))
     return {"artifact": artifact, "normalized_vehicle": normalized}
 
@@ -159,6 +293,15 @@ def import_artifact(payload: CsvImport) -> dict[str, Any]:
 @app.get("/api/artifacts")
 def artifacts() -> list[dict[str, Any]]:
     return list_entities("artifacts", current_project()["id"], 100)
+
+
+@app.get("/api/artifacts/{artifact_id}/download")
+def download_artifact(artifact_id: str) -> FileResponse:
+    artifact = get_entity("artifacts", artifact_id)
+    data = artifact_bytes(artifact_id) if artifact else None
+    if not artifact or data is None:
+        raise HTTPException(status_code=404, detail="Retained artifact bytes are unavailable")
+    return FileResponse(Path(artifact["storage_path"]), filename=artifact["name"], media_type="application/octet-stream")
 
 
 @app.post("/api/simulate")
@@ -298,6 +441,35 @@ def selected_compare(request: CompareRequest) -> dict[str, Any]:
     return result
 
 
+@app.get("/api/investigations")
+def investigations() -> list[dict[str, Any]]:
+    return list_entities("investigations", current_project()["id"], 100)
+
+
+@app.post("/api/investigations")
+def create_investigation(payload: InvestigationCreate) -> dict[str, Any]:
+    project = current_project()
+    if payload.simulation_id and not simulation_with_packets(payload.simulation_id):
+        raise HTTPException(status_code=404, detail="Linked simulation was not found")
+    if payload.flight_id and not flight_with_packets(payload.flight_id):
+        raise HTTPException(status_code=404, detail="Linked flight was not found")
+    item = save_entity("investigations", {"id": new_id("investigation"), "observation": payload.observation, "severity": payload.severity, "possible_causes": payload.possible_causes, "simulation_id": payload.simulation_id, "flight_id": payload.flight_id, "configuration_version": payload.configuration_version or mission_config().get("version"), "status": "OPEN", "notes": payload.notes}, project["id"])
+    record_audit(AuditEvent(action="investigation_created", result="PASS", detail=payload.observation[:160], object_id=item["id"]))
+    return item
+
+
+@app.patch("/api/investigations/{investigation_id}")
+def update_investigation(investigation_id: str, payload: InvestigationUpdate) -> dict[str, Any]:
+    project = current_project()
+    current = next((item for item in list_entities("investigations", project["id"], 100) if item["id"] == investigation_id), None)
+    if not current:
+        raise HTTPException(status_code=404, detail="Investigation not found")
+    updated = {**current, **payload.model_dump(exclude_none=True)}
+    saved = save_entity("investigations", updated, project["id"])
+    record_audit(AuditEvent(action="investigation_updated", result="PASS", detail=f"Set status to {saved['status']}.", object_id=investigation_id))
+    return saved
+
+
 @app.get("/api/mission/config")
 def mission_config() -> dict[str, Any]:
     records = list_entities("missions", current_project()["id"], 1)
@@ -371,22 +543,30 @@ def generate_report(request: CompareRequest | None = None) -> dict[str, Any]:
     path_id = new_id("report")
     REPORTS.mkdir(parents=True, exist_ok=True)
     path = REPORTS / f"{path_id}.html"
-    path.write_text(build_report(dashboard(), comparison, tests), encoding="utf-8")
-    report = save_entity("reports", {"id": path_id, "format": "HTML", "path": str(path), "simulation_id": selection.simulation_id, "flight_id": selection.flight_id, "generated_at": now()}, project["id"])
+    report_json_path = REPORTS / f"{path_id}.json"
+    evidence = {"investigations": list_entities("investigations", project["id"], 100), "requirements": list_entities("requirements", project["id"], 100), "security_findings": list_entities("security_findings", project["id"], 100), "audit": audit_history(30)}
+    report_data = {"project": project, "dashboard": dashboard(), "comparison": comparison, "tests": tests, "evidence": evidence, "generated_at": now(), "limitations": "Simplified Mission Software Verification Simulator; not flight certification or flight-accurate dynamics."}
+    path.write_text(build_report(report_data["dashboard"], comparison, tests, evidence), encoding="utf-8")
+    report_json_path.write_text(json.dumps(report_data, indent=2, default=str), encoding="utf-8")
+    report = save_entity("reports", {"id": path_id, "format": "HTML+JSON", "path": str(path), "json_path": str(report_json_path), "simulation_id": selection.simulation_id, "flight_id": selection.flight_id, "generated_at": now()}, project["id"])
     record_audit(AuditEvent(action="report_generated", result="PASS", detail="Generated report from current persisted data.", object_id=path_id))
-    return {"id": path_id, "url": f"/api/reports/{path_id}", "formats": ["HTML", "JSON"], "report": report}
+    return {"id": path_id, "url": f"/api/reports/{path_id}", "json_url": f"/api/reports/{path_id}?format=json", "formats": ["HTML", "JSON"], "report": report}
 
 
 @app.get("/api/reports/{report_id}", response_class=HTMLResponse)
-def get_report(report_id: str) -> FileResponse:
+def get_report(report_id: str, format: str = "html") -> FileResponse:
     report = get_entity("reports", report_id)
-    if not report or not Path(report["path"]).exists():
+    path = Path(report.get("json_path", "")) if format.lower() == "json" else Path(report.get("path", ""))
+    if not report or not path.exists():
         raise HTTPException(status_code=404, detail="Report not found. Generate it first.")
-    return FileResponse(report["path"], media_type="text/html", filename=f"{report_id}.html")
+    suffix = "json" if format.lower() == "json" else "html"
+    return FileResponse(path, media_type="application/json" if suffix == "json" else "text/html", filename=f"{report_id}.{suffix}")
 
 
 @app.post("/api/demo/reset")
 def reset_demo() -> dict[str, Any]:
     reset_project(DEMO_PROJECT_ID)
     record_audit(AuditEvent(action="demo_reset", result="PASS", detail="Deleted and reseeded only the demo project.", object_id=DEMO_PROJECT_ID))
-    return seed_demo()
+    project = seed_demo()
+    set_active_project(DEMO_PROJECT_ID)
+    return project

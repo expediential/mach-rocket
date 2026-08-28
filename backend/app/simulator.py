@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import math
 import os
 import random
@@ -44,16 +45,21 @@ def altitude(time_s: float, target_altitude_m: float = 1000, duration_s: float =
     return max(0.0, target_altitude_m * descent_fraction ** 1.15)
 
 
-def _signature(packet_number: int, timestamp_s: float, altitude_m: float) -> str:
-    payload = f"{packet_number}|{timestamp_s:.3f}|{altitude_m:.2f}".encode()
-    return hmac.new(HMAC_KEY, payload, hashlib.sha256).hexdigest()[:16]
+def _canonical_payload(packet: TelemetryPacket) -> bytes:
+    """Deterministic serialization of every telemetry field except its signature."""
+    values = packet.model_dump(mode="json", exclude={"integrity"})
+    return json.dumps(values, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+
+def _signature(packet: TelemetryPacket) -> str:
+    return hmac.new(HMAC_KEY, _canonical_payload(packet), hashlib.sha256).hexdigest()
 
 
 def verify_packet(packet: TelemetryPacket) -> bool:
     """Verify a packet's optional HMAC against its public canonical fields."""
     if not packet.integrity:
         return False
-    return hmac.compare_digest(packet.integrity, _signature(packet.packet_number, packet.timestamp_s, packet.altitude_m))
+    return hmac.compare_digest(packet.integrity, _signature(packet))
 
 
 def _active(events: list[FaultEvent], event_type: str, time_s: float) -> list[FaultEvent]:
@@ -103,7 +109,7 @@ def simulate(request: ScenarioRequest) -> SimulationResult:
             battery -= 1.5
         altitude_noise = 0 if abs(time_s - min(duration_s - .5, max(.5, round(duration_s * .34)))) < step / 2 else rng.uniform(-request.noise_level_m, request.noise_level_m)
         packet = TelemetryPacket(packet_number=index, timestamp_s=round(timestamp, 3), altitude_m=round(max(0, raw_altitude + altitude_noise), 2), velocity_m_s=round((altitude(time_s + step, request.target_altitude_m, duration_s) - raw_altitude) / 2, 2), pressure_hpa=round(1013.25 * math.exp(-raw_altitude / 8434.5), 2), temperature_c=round(temperature, 2), battery_v=round(max(0, battery), 3), latitude=None if active_gps_loss else 12.9716, longitude=None if active_gps_loss else 77.5946, phase=mission_phase(time_s, duration_s), gps_valid=not active_gps_loss)
-        packet.integrity = _signature(packet.packet_number, packet.timestamp_s, packet.altitude_m)
+        packet.integrity = _signature(packet)
         packets.append(packet)
         if _active(events, "PACKET_DUPLICATE", time_s) or request.telemetry_behavior == "duplicate":
             packets.append(packet.model_copy(deep=True))

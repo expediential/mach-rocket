@@ -4,6 +4,7 @@ const pageTitle = document.querySelector('#page-title');
 const crumb = document.querySelector('#crumb');
 let currentPage = 'Dashboard';
 let replayTimer = null;
+let activeProjectId = null;
 
 async function api(path, options = {}) {
   const response = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -16,6 +17,15 @@ function setActive(page) { document.querySelectorAll('.nav').forEach(button => b
 function loading() { content.innerHTML = '<div class="empty">Loading current project data…</div>'; }
 function failure(error) { content.innerHTML = `<article class="panel"><h2>Could not load this view</h2><p>${esc(error.message)}</p><p class="muted">Confirm the local API is running. No project source data was modified.</p></article>`; }
 function profilePath(packets, width = 700, height = 198) { if (!packets?.length) return ''; const maxTime = Math.max(...packets.map(packet => packet.timestamp_s), 1); const maxAltitude = Math.max(...packets.map(packet => packet.altitude_m), 1); return packets.map((packet, index) => `${index ? 'L' : 'M'}${(packet.timestamp_s / maxTime * width).toFixed(1)},${(height - packet.altitude_m / maxAltitude * (height - 10)).toFixed(1)}`).join(' '); }
+
+async function refreshWorkspace() {
+  const [projects, dashboard] = await Promise.all([api('/api/projects'), api('/api/dashboard')]);
+  activeProjectId = dashboard.project.id;
+  const picker = document.querySelector('#project-picker');
+  picker.innerHTML = projects.map(project => `<option value="${esc(project.id)}" ${project.id === activeProjectId ? 'selected' : ''}>${esc(project.name)}</option>`).join('');
+  document.querySelector('#project-summary').textContent = `${dashboard.project.vehicle_name} · ${dashboard.mission.version}`;
+  picker.onchange = async () => { await api(`/api/projects/${picker.value}/select`, { method: 'POST', body: '{}' }); await refreshWorkspace(); await navigate(currentPage); };
+}
 
 async function dashboardPage() {
   const data = await api('/api/dashboard');
@@ -98,12 +108,18 @@ async function securityPage() {
 async function settingsPage() {
   const [history, audit, projects] = await Promise.all([api('/api/config/history'), api('/api/audit'), api('/api/projects')]);
   content.innerHTML = `<div class="grid two"><article class="panel"><span class="eyebrow">CONFIGURATION HISTORY</span><h2>Revisions</h2><table class="table"><thead><tr><th>VERSION</th><th>REASON</th><th>DIFF</th></tr></thead><tbody>${history.revisions.map(revision => `<tr><td><strong>${esc(revision.version)}</strong></td><td>${esc(revision.reason)}</td><td><code>${esc(JSON.stringify(revision.diff))}</code></td></tr>`).join('')}</tbody></table></article><article class="panel"><span class="eyebrow">PROJECT WORKSPACE</span><h2>${projects.length} project(s)</h2><form id="project-form"><div class="field"><label>PROJECT NAME</label><input id="project-name" value="Student Mission ${projects.length + 1}" /></div><div class="field"><label>VEHICLE NAME</label><input id="project-vehicle" value="New Vehicle" /></div><div class="field"><label>MISSION NAME</label><input id="project-mission" value="Validation mission" /></div><div class="form-row"><input id="project-alt" type="number" value="1000" placeholder="Target altitude (m)" /><input id="project-rate" type="number" step="0.1" value="1" placeholder="Telemetry rate (Hz)" /></div><div class="field"><label>EXPECTED DURATION (S)</label><input id="project-duration" type="number" value="90" /></div><button class="secondary">Create project</button></form><div id="project-result"></div><hr/><button class="secondary" id="reset-demo">Reset demo project data</button><div id="reset-result"></div></article></div><article class="panel"><span class="eyebrow">AUDIT LOG</span><h3>Persisted actions</h3><table class="table"><thead><tr><th>TIME</th><th>ACTION</th><th>RESULT</th><th>DETAIL</th></tr></thead><tbody>${audit.slice(0,20).map(event => `<tr><td>${new Date(event.occurred_at).toLocaleString()}</td><td>${esc(event.action)}</td><td>${badge(event.result)}</td><td>${esc(event.detail)}</td></tr>`).join('')}</tbody></table></article>`;
-  content.querySelector('#project-form').onsubmit = async event => { event.preventDefault(); const result = await api('/api/projects', { method: 'POST', body: JSON.stringify({ name: content.querySelector('#project-name').value, vehicle_name: content.querySelector('#project-vehicle').value, mission_name: content.querySelector('#project-mission').value, target_altitude_m: Number(content.querySelector('#project-alt').value), telemetry_rate_hz: Number(content.querySelector('#project-rate').value), expected_duration_s: Number(content.querySelector('#project-duration').value) }) }); content.querySelector('#project-result').innerHTML = `<div class="report-success">Created ${esc(result.name)}. New projects are persisted; the current workspace remains the most recently created.</div>`; };
-  content.querySelector('#reset-demo').onclick = async () => { const result = await api('/api/demo/reset', { method: 'POST', body: '{}' }); content.querySelector('#reset-result').innerHTML = `<div class="report-success">Demo reset and reseeded: ${esc(result.name)}.</div>`; };
+  content.querySelector('#project-form').onsubmit = async event => { event.preventDefault(); const result = await api('/api/projects', { method: 'POST', body: JSON.stringify({ name: content.querySelector('#project-name').value, vehicle_name: content.querySelector('#project-vehicle').value, mission_name: content.querySelector('#project-mission').value, target_altitude_m: Number(content.querySelector('#project-alt').value), telemetry_rate_hz: Number(content.querySelector('#project-rate').value), expected_duration_s: Number(content.querySelector('#project-duration').value) }) }); await refreshWorkspace(); content.querySelector('#project-result').innerHTML = `<div class="report-success">Created and opened ${esc(result.name)}.</div>`; };
+  content.querySelector('#reset-demo').onclick = async () => { const result = await api('/api/demo/reset', { method: 'POST', body: '{}' }); await refreshWorkspace(); content.querySelector('#reset-result').innerHTML = `<div class="report-success">Demo reset and opened: ${esc(result.name)}.</div>`; };
 }
 
-async function navigate(page) { currentPage = page; setActive(page); loading(); try { const pages = { Dashboard: dashboardPage, Vehicle: vehiclePage, Mission: missionPage, Simulate: simulatePage, Test: testPage, Flights: flightsPage, Compare: comparePage, Reports: reportsPage, Files: filesPage, Security: securityPage, Settings: settingsPage }; await pages[page](); } catch (error) { failure(error); } }
+async function investigationsPage() {
+  const items = await api('/api/investigations');
+  content.innerHTML = `<article class="panel"><span class="eyebrow">PERSISTED DISCREPANCIES</span><h2>Investigations</h2><p>These are evidence-linked hypotheses, not asserted root causes.</p>${items.length ? `<table class="table"><thead><tr><th>OBSERVATION</th><th>SEVERITY</th><th>STATUS</th><th>ACTION</th></tr></thead><tbody>${items.map(item => `<tr><td><strong>${esc(item.observation)}</strong><br/><small>${esc((item.possible_causes || []).join('; '))}</small></td><td>${badge(item.severity)}</td><td>${badge(item.status)}</td><td><select data-investigation="${esc(item.id)}"><option ${item.status === 'OPEN' ? 'selected' : ''}>OPEN</option><option ${item.status === 'UNDER INVESTIGATION' ? 'selected' : ''}>UNDER INVESTIGATION</option><option ${item.status === 'RESOLVED' ? 'selected' : ''}>RESOLVED</option><option ${item.status === 'WONT FIX' ? 'selected' : ''}>WONT FIX</option></select></td></tr>`).join('')}</tbody></table>` : '<p class="muted">No investigations are open. Run a comparison to identify areas worth tracking.</p>'}</article>`;
+  content.querySelectorAll('[data-investigation]').forEach(select => select.onchange = async () => { await api(`/api/investigations/${select.dataset.investigation}`, { method: 'PATCH', body: JSON.stringify({ status: select.value }) }); await investigationsPage(); });
+}
+
+async function navigate(page) { currentPage = page; setActive(page); loading(); try { const pages = { Dashboard: dashboardPage, Vehicle: vehiclePage, Mission: missionPage, Simulate: simulatePage, Test: testPage, Flights: flightsPage, Compare: comparePage, Investigations: investigationsPage, Reports: reportsPage, Files: filesPage, Security: securityPage, Settings: settingsPage }; await pages[page](); } catch (error) { failure(error); } }
 document.querySelectorAll('.nav').forEach(button => button.addEventListener('click', () => navigate(button.dataset.page)));
 document.querySelector('#quick-sim').addEventListener('click', () => navigate('Simulate'));
 document.querySelector('#report-button').addEventListener('click', () => navigate('Reports'));
-navigate(currentPage);
+refreshWorkspace().then(() => navigate(currentPage)).catch(failure);

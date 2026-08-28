@@ -113,6 +113,45 @@ class ProjectCreate(BaseModel):
     expected_duration_s: int = Field(gt=0, le=3600)
 
 
+class ProjectUpdate(BaseModel):
+    """Lifecycle changes to a local project workspace."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    archived: bool | None = None
+
+
+class ArtifactImport(BaseModel):
+    """Text-safe project artifact import.
+
+    Binary artifacts are retained through the project archive import/export path;
+    this endpoint deliberately accepts only decoded text and never executes it.
+    """
+
+    name: str = Field(min_length=1, max_length=180)
+    content: str = Field(max_length=5_000_000)
+
+
+class InvestigationCreate(BaseModel):
+    observation: str = Field(min_length=1, max_length=1000)
+    severity: Literal["LOW", "MEDIUM", "HIGH"] = "MEDIUM"
+    possible_causes: list[str] = Field(default_factory=list, max_length=12)
+    simulation_id: str | None = None
+    flight_id: str | None = None
+    configuration_version: str | None = None
+    notes: str = Field(default="", max_length=4000)
+
+
+class InvestigationUpdate(BaseModel):
+    status: Literal["OPEN", "UNDER INVESTIGATION", "RESOLVED", "WONT FIX"]
+    notes: str | None = Field(default=None, max_length=4000)
+
+
+class ProjectArchiveImport(BaseModel):
+    """A user-selected local ZIP, encoded by the browser for import."""
+
+    archive_base64: str = Field(min_length=20, max_length=30_000_000)
+
+
 class ConfigurationUpdate(BaseModel):
     target_altitude_m: float = Field(gt=0, le=10000)
     telemetry_rate_hz: float = Field(gt=0, le=20)

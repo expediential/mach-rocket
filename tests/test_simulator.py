@@ -55,10 +55,16 @@ class SimulatorTests(unittest.TestCase):
             ScenarioRequest(fault="detonate")
 
     def test_integrity_signature_present(self):
-        self.assertEqual(len(simulate(ScenarioRequest()).telemetry[0].integrity), 16)
+        self.assertEqual(len(simulate(ScenarioRequest()).telemetry[0].integrity), 64)
 
     def test_integrity_detects_tampering(self):
         packet = simulate(ScenarioRequest()).telemetry[0]
         self.assertTrue(verify_packet(packet))
         packet.altitude_m += 1
+        self.assertFalse(verify_packet(packet))
+
+    def test_integrity_covers_every_canonical_field(self):
+        packet = simulate(ScenarioRequest()).telemetry[0]
+        self.assertTrue(verify_packet(packet))
+        packet.temperature_c += 1
         self.assertFalse(verify_packet(packet))

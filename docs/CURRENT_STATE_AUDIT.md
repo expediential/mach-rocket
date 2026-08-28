@@ -28,3 +28,16 @@ Audit performed against the repository before the hardening pass. The prototype 
 4. Replay, vehicle visualization, project creation, test creation, and configuration editing were absent.
 
 The remediation below keeps the local-first FastAPI/SQLite architecture and replaces demo constants with seeded rows that use the same normal application paths as user-created data.
+
+## Follow-up remediation status
+
+| Feature | Status after follow-up | Evidence |
+| --- | --- | --- |
+| Active project workspace | REAL | The selected project is persisted in SQLite and every screen resolves it through the active workspace. |
+| Project lifecycle | REAL | Create, select, rename/archive, duplicate, ZIP export, and ZIP import routes use persisted project records. |
+| Artifact retention | REAL for text imports | Filename-sanitized source bytes are SHA-256 hashed and retained by opaque ID; retained artifacts can be downloaded. |
+| OpenRocket-driven vehicle model | PARTIAL | Tolerant XML extraction maps supported body/nose/fin/payload/motor components into the canonical vehicle. Unsupported XML remains retained and explicitly has no reconstructed preview. |
+| Telemetry integrity | REAL | HMAC-SHA256 covers deterministic canonical serialization of every public telemetry field, excluding only the signature itself. |
+| Investigations | REAL | Comparison-linked observations, causes, configuration version, status, and notes are persisted and exposed in the UI/report. |
+| Reports | REAL | Current selected evidence produces stored HTML and JSON reports. |
+| Real-time streaming simulator | PARTIAL | Runs are reproducible and replayed from persisted packets. Server-side live packet streaming remains a documented future adapter rather than a claimed behavior. |
